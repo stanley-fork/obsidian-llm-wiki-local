@@ -57,12 +57,12 @@ def _load_db(config):
 
 
 def _load_deps(config):
-    from .ollama_client import OllamaClient, OllamaError
+    from .client_factory import LLMError, build_client
 
-    client = OllamaClient(base_url=config.ollama.url, timeout=config.ollama.timeout)
+    client = build_client(config)
     try:
         client.require_healthy()
-    except OllamaError as e:
+    except LLMError as e:
         err_console.print(str(e))
         sys.exit(1)
     db = _load_db(config)
@@ -118,16 +118,43 @@ def init(vault_path: str, existing: bool, non_interactive: bool):
     from .global_config import load_global_config
 
     gcfg = load_global_config()
-    fast = gcfg.fast_model if gcfg and gcfg.fast_model else "gemma4:e4b"
-    heavy = gcfg.heavy_model if gcfg and gcfg.heavy_model else "qwen2.5:14b"
+    provider_name = gcfg.provider_name if gcfg and gcfg.provider_name else "ollama"
+    # Only fall back to Ollama-specific model names when using Ollama; cloud providers
+    # must have been configured explicitly via `olw setup`.
+    _ollama = provider_name == "ollama"
+    fast = gcfg.fast_model if gcfg and gcfg.fast_model else ("gemma4:e4b" if _ollama else "")
+    heavy = gcfg.heavy_model if gcfg and gcfg.heavy_model else ("qwen2.5:14b" if _ollama else "")
+    provider_url = gcfg.provider_url if gcfg and gcfg.provider_url else None
     ollama_url = gcfg.ollama_url if gcfg and gcfg.ollama_url else "http://localhost:11434"
+    effective_url = provider_url or ollama_url
+    azure_api_version = gcfg.azure_api_version if gcfg and gcfg.azure_api_version else None
 
     if not toml_path.exists():
-        toml_path.write_text(default_wiki_toml(fast, heavy, ollama_url))
+        from .providers import get_provider
+
+        prov_info = get_provider(provider_name)
+        timeout = prov_info.default_timeout if prov_info else 600.0
+        toml_path.write_text(
+            default_wiki_toml(
+                fast,
+                heavy,
+                ollama_url=ollama_url,
+                provider_name=provider_name,
+                provider_url=effective_url if provider_name != "ollama" else None,
+                provider_timeout=timeout,
+                azure_api_version=azure_api_version,
+            )
+        )
     else:
         # Existing vault: patch model/URL fields from global config so that
         # olw setup changes are reflected without overwriting pipeline settings.
-        _sync_wiki_toml_models(toml_path, fast, heavy, ollama_url)
+        _sync_wiki_toml_models(
+            toml_path,
+            fast,
+            heavy,
+            effective_url,
+            provider_name=provider_name if provider_name != "ollama" else None,
+        )
 
     # Init git
     git_init(vault)
@@ -144,11 +171,20 @@ def init(vault_path: str, existing: bool, non_interactive: bool):
     console.print("  3. Review drafts: [bold]olw review[/bold]")
 
 
-def _sync_wiki_toml_models(toml_path: Path, fast: str, heavy: str, ollama_url: str) -> None:
-    """Patch fast/heavy model and Ollama URL in an existing wiki.toml in-place.
+def _sync_wiki_toml_models(
+    toml_path: Path,
+    fast: str,
+    heavy: str,
+    ollama_url: str,
+    provider_name: str | None = None,
+) -> None:
+    """Patch fast/heavy model, URL, and optionally provider name in an existing wiki.toml.
 
     Preserves all other settings (pipeline, rag, etc.) so user customisations
     are not lost. Only updates fields that come from global config.
+
+    URL is only updated within the [ollama] or [provider] section, never globally,
+    so switching providers cannot overwrite unrelated url= fields.
     """
     import re
 
@@ -164,9 +200,28 @@ def _sync_wiki_toml_models(toml_path: Path, fast: str, heavy: str, ollama_url: s
             flags=re.MULTILINE,
         )
 
+    def _replace_in_section(t: str, section: str, key: str, value: str) -> str:
+        """Replace key=value only within the named TOML section."""
+        escaped_val = value.replace("\\", "\\\\").replace('"', '\\"')
+        # Match the section header then capture everything until the next section or EOF
+        pattern = rf'(\[{re.escape(section)}\][^\[]*?)^({re.escape(key)}\s*=\s*)".+"'
+        replacement = rf'\1\2"{escaped_val}"'
+        return re.sub(pattern, replacement, t, flags=re.MULTILINE | re.DOTALL)
+
     text = _replace_value(text, "fast", fast)
     text = _replace_value(text, "heavy", heavy)
-    text = _replace_value(text, "url", ollama_url)
+    # Update URL only in [ollama] or [provider] sections to avoid clobbering other urls
+    for section in ("ollama", "provider"):
+        text = _replace_in_section(text, section, "url", ollama_url)
+    if provider_name is not None:
+        if "[provider]" not in text:
+            console.print(
+                f"  [yellow]Warning:[/yellow] wiki.toml has no [provider] section — "
+                f"provider '{provider_name}' not applied. "
+                f"Delete wiki.toml and re-run [bold]olw init[/bold] to regenerate it."
+            )
+        else:
+            text = _replace_in_section(text, "provider", "name", provider_name)
 
     if text != original:
         toml_path.write_text(text, encoding="utf-8")
@@ -276,10 +331,16 @@ def _pick_model(
 @cli.command()
 @click.option("--non-interactive", is_flag=True, help="Print current config and exit")
 @click.option("--reset", is_flag=True, help="Clear saved config and re-run wizard")
-def setup(non_interactive: bool, reset: bool):
-    """Interactive wizard: configure Ollama URL, models, and default vault."""
+@click.option(
+    "--provider",
+    "provider_preset",
+    default=None,
+    help="Skip provider selection (e.g. groq, lm_studio)",
+)
+def setup(non_interactive: bool, reset: bool, provider_preset: str | None):
+    """Interactive wizard: configure provider, models, and default vault."""
     from .global_config import GlobalConfig, load_global_config, save_global_config
-    from .ollama_client import OllamaClient
+    from .providers import PROVIDER_REGISTRY, get_provider, list_all_providers
 
     # ── non-interactive: show current config ──────────────────────────────────
     if non_interactive:
@@ -292,9 +353,12 @@ def setup(non_interactive: bool, reset: bool):
         table = Table(title="Global config", show_header=False, box=None, padding=(0, 2))
         table.add_column("Key", style="bold")
         table.add_column("Value")
+        prov_display = gcfg.provider_name or (gcfg.ollama_url and "ollama") or "[dim]not set[/dim]"
+        table.add_row("Provider", prov_display)
+        table.add_row("URL", gcfg.provider_url or gcfg.ollama_url or "[dim]not set[/dim]")
+        table.add_row("API key", "***" if gcfg.api_key else "[dim]not set[/dim]")
         table.add_row("Fast model", gcfg.fast_model or "[dim]not set[/dim]")
         table.add_row("Heavy model", gcfg.heavy_model or "[dim]not set[/dim]")
-        table.add_row("Ollama URL", gcfg.ollama_url or "[dim]not set[/dim]")
         table.add_row("Default vault", gcfg.vault or "[dim]not set[/dim]")
         console.print(table)
         return
@@ -315,7 +379,7 @@ def setup(non_interactive: bool, reset: bool):
             _ver = "unknown"
         console.print(
             Panel(
-                f"[bold]obsidian-llm-wiki[/bold] v{_ver}  ·  first run setup",
+                f"[bold]obsidian-llm-wiki[/bold] v{_ver}  ·  setup",
                 expand=False,
                 border_style="blue",
                 padding=(0, 4),
@@ -323,55 +387,167 @@ def setup(non_interactive: bool, reset: bool):
         )
         console.print()
 
-        # ── Step 1/4 — Ollama connection ──────────────────────────────────────
-        DEFAULT_URL = "http://localhost:11434"
-        console.print("  [bold]Step 1/4[/bold]  Ollama connection")
+        all_providers = list_all_providers()
 
-        client = OllamaClient(base_url=DEFAULT_URL, timeout=5)
-        connected = client.healthcheck()
-
-        if connected:
-            console.print(f"    Trying {DEFAULT_URL} …  [green]✓ connected[/green]")
+        # ── Step 1 — Provider selection ───────────────────────────────────────
+        if provider_preset:
+            chosen_prov = get_provider(provider_preset)
+            if chosen_prov is None:
+                console.print(
+                    f"    [yellow]Unknown provider '{provider_preset}', using Ollama.[/yellow]"
+                )
+                chosen_prov = PROVIDER_REGISTRY["ollama"]
+            chosen_name = chosen_prov.name
         else:
-            console.print(f"    [yellow]Warning:[/yellow] Could not reach {DEFAULT_URL}")
+            console.print("  [bold]Step 1[/bold]  Provider\n")
+
+            # Build numbered list
+            local_provs = [p for p in all_providers if p.is_local]
+            cloud_provs = [p for p in all_providers if not p.is_local and p.name != "custom"]
+
+            console.print("    [bold]Local[/bold] (no API key needed):")
+            idx_map: dict[int, str] = {}
+            counter = 1
+            for p in local_provs:
+                marker = "  [default]" if p.name == "ollama" else ""
+                console.print(f"      {counter:2}. {p.display_name:<14} {p.default_url}{marker}")
+                idx_map[counter] = p.name
+                counter += 1
+
+            console.print()
+            console.print("    [bold]Cloud[/bold] (API key required):")
+            for p in cloud_provs:
+                url_hint = p.default_url if p.default_url else "(enter URL manually)"
+                console.print(f"      {counter:2}. {p.display_name:<14} {url_hint}")
+                idx_map[counter] = p.name
+                counter += 1
+
+            console.print()
+            console.print(f"      {counter:2}. Custom         (enter URL manually)")
+            idx_map[counter] = "custom"
+
+            console.print()
+            raw = Prompt.ask(
+                "    Select provider (number or name)", default="1", console=console
+            ).strip()
+
+            if raw.isdigit():
+                num = int(raw)
+                chosen_name = idx_map.get(num, "ollama")
+            elif raw in PROVIDER_REGISTRY:
+                chosen_name = raw
+            else:
+                console.print(f"    [yellow]Unknown '{raw}', defaulting to Ollama.[/yellow]")
+                chosen_name = "ollama"
+
+            chosen_prov = PROVIDER_REGISTRY[chosen_name]
+
+        # ── Step 2 — URL ──────────────────────────────────────────────────────
+        console.print()
+        console.print("  [bold]Step 2[/bold]  URL")
+        default_url = chosen_prov.default_url or ""
+        if chosen_name == "azure":
             console.print(
-                "    You can still configure manually — run [bold]olw doctor[/bold] later."
+                "    Azure format: https://{resource}.openai.azure.com/openai/deployments/{model}"
+            )
+        provider_url = Prompt.ask("    Base URL", default=default_url, console=console).strip()
+        if not provider_url:
+            provider_url = default_url
+        if not provider_url and chosen_name in ("custom", "azure"):
+            console.print(
+                "    [red]URL is required for this provider. "
+                "Run [bold]olw setup[/bold] again and enter a valid URL.[/red]"
+            )
+            sys.exit(1)
+
+        # ── Step 3 — API key (cloud + custom providers) ───────────────────────
+        import os
+
+        needs_key_prompt = chosen_prov.requires_auth or chosen_name == "custom"
+        api_key: str | None = None
+        if needs_key_prompt:
+            console.print()
+            console.print("  [bold]Step 3[/bold]  API key")
+            if chosen_prov.env_var:
+                env_hint = f"  [dim](or set {chosen_prov.env_var} env var)[/dim]"
+            elif chosen_name == "custom":
+                env_hint = "  [dim](optional — press Enter to skip)[/dim]"
+            else:
+                env_hint = ""
+            console.print(f"    API key{env_hint}")
+            raw_key = Prompt.ask("    Key", default="", password=True, console=console).strip()
+            api_key = raw_key if raw_key else None
+
+        # ── Build a temp client to probe for model list ───────────────────────
+        if chosen_name == "ollama":
+            from .ollama_client import OllamaClient
+
+            temp_client = OllamaClient(base_url=provider_url, timeout=5)
+        else:
+            from .openai_compat_client import OpenAICompatClient
+
+            resolved_key = api_key
+            if not resolved_key and chosen_prov.env_var:
+                resolved_key = os.environ.get(chosen_prov.env_var)
+            if not resolved_key:
+                resolved_key = os.environ.get("OLW_API_KEY")
+            temp_client = OpenAICompatClient(
+                base_url=provider_url,
+                provider_name=chosen_name,
+                api_key=resolved_key,
+                timeout=5,
+                supports_json_mode=chosen_prov.supports_json_mode,
+                supports_embeddings=chosen_prov.supports_embeddings,
+                azure=chosen_prov.azure,
+            )
+        connected = temp_client.healthcheck()
+        if connected:
+            console.print("    [green]✓ connected[/green]")
+        else:
+            console.print(
+                f"    [yellow]Warning:[/yellow] Cannot reach {provider_url} — continuing anyway."
             )
 
-        ollama_url = Prompt.ask("    Ollama URL", default=DEFAULT_URL, console=console)
+        # ── Default model names per provider ──────────────────────────────────
+        # For non-Ollama providers, leave defaults empty — model names are
+        # provider-specific and must be entered by the user.
+        default_fast = "gemma4:e4b" if chosen_name == "ollama" else ""
+        default_heavy = "qwen2.5:14b" if chosen_name == "ollama" else ""
+        if chosen_name != "ollama" and not connected:
+            console.print(
+                "    [dim]Tip: enter the model name exactly as the provider lists it "
+                "(e.g. llama-3.1-70b-versatile for Groq).[/dim]"
+            )
 
-        if ollama_url != DEFAULT_URL:
-            client = OllamaClient(base_url=ollama_url, timeout=5)
-            connected = client.healthcheck()
-            if not connected:
-                console.print(
-                    f"    [yellow]Warning:[/yellow] Cannot reach {ollama_url} — continuing anyway."
-                )
+        step_offset = 1 if needs_key_prompt else 0
 
-        # ── Step 2/4 — Fast model ─────────────────────────────────────────────
+        # ── Step 4 — Fast model ───────────────────────────────────────────────
         fast_model = _pick_model(
             console=console,
-            client=client,
-            step_label="Step 2/4",
+            client=temp_client,
+            step_label=f"Step {3 + step_offset}",
             description="Fast model  [dim](analysis & routing · 3–8B recommended)[/dim]",
-            default_fallback="gemma4:e4b",
+            default_fallback=default_fast,
             connected=connected,
         )
 
-        # ── Step 3/4 — Heavy model ────────────────────────────────────────────
+        # ── Step 5 — Heavy model ──────────────────────────────────────────────
         heavy_model = _pick_model(
             console=console,
-            client=client,
-            step_label="Step 3/4",
+            client=temp_client,
+            step_label=f"Step {4 + step_offset}",
             description="Heavy model  [dim](article writing · 7–14B recommended)[/dim]",
-            default_fallback="qwen2.5:14b",
+            default_fallback=default_heavy,
             connected=connected,
         )
 
-        # ── Step 4/4 — Default vault ──────────────────────────────────────────
+        temp_client.close()
+
+        # ── Final step — Default vault ────────────────────────────────────────
         console.print()
+        step_label = f"Step {5 + step_offset}"
         console.print(
-            "  [bold]Step 4/4[/bold]  Default vault path  [dim](press Enter to skip)[/dim]"
+            f"  [bold]{step_label}[/bold]  Default vault path  [dim](press Enter to skip)[/dim]"
         )
         vault_input = Prompt.ask("    Vault path", default="", console=console)
         vault_path: str | None = None
@@ -379,11 +555,27 @@ def setup(non_interactive: bool, reset: bool):
             vault_path = str(Path(vault_input).expanduser().resolve())
 
         # ── Save ──────────────────────────────────────────────────────────────
+        # Preserve existing azure_api_version so re-running setup doesn't reset it.
+        existing_cfg = load_global_config()
+        if chosen_name == "azure":
+            azure_api_ver = (
+                existing_cfg.azure_api_version
+                if existing_cfg and existing_cfg.azure_api_version
+                else "2024-02-15-preview"
+            )
+        else:
+            azure_api_ver = None
+
+        # Keep ollama_url for backward compat when Ollama is selected
         cfg = GlobalConfig(
             vault=vault_path,
-            ollama_url=ollama_url,
-            fast_model=fast_model,
-            heavy_model=heavy_model,
+            ollama_url=provider_url if chosen_name == "ollama" else None,
+            fast_model=fast_model if fast_model else None,
+            heavy_model=heavy_model if heavy_model else None,
+            provider_name=chosen_name,
+            provider_url=provider_url,
+            api_key=api_key,
+            azure_api_version=azure_api_ver,
         )
         save_global_config(cfg)
 
@@ -391,10 +583,15 @@ def setup(non_interactive: bool, reset: bool):
         init_target = vault_path or "~/my-wiki"
         summary_lines = [
             "[green]✓[/green]  Setup complete\n",
-            f"  Fast model:   [bold]{fast_model}[/bold]",
-            f"  Heavy model:  [bold]{heavy_model}[/bold]",
-            f"  Ollama:       {ollama_url}",
+            f"  Provider:     [bold]{chosen_prov.display_name}[/bold]",
+            f"  URL:          {provider_url}",
         ]
+        if api_key:
+            summary_lines.append("  API key:      ***")
+        if fast_model:
+            summary_lines.append(f"  Fast model:   [bold]{fast_model}[/bold]")
+        if heavy_model:
+            summary_lines.append(f"  Heavy model:  [bold]{heavy_model}[/bold]")
         if vault_path:
             summary_lines.append(f"  Vault:        {vault_path}")
         summary_lines += [
@@ -845,12 +1042,13 @@ def clean(vault_str, yes):
 @cli.command()
 @click.option("--vault", "vault_str", envvar="OLW_VAULT", default=None)
 def doctor(vault_str):
-    """Check Ollama connection, model availability, and vault health."""
-    from .ollama_client import OllamaClient, OllamaError
+    """Check LLM provider connection, model availability, and vault health."""
+    from .client_factory import LLMError, build_client
 
     config = _load_config(vault_str)
     db = _load_db(config)
     ok = True
+    prov = config.effective_provider
 
     console.print("[bold]olw doctor[/bold]\n")
 
@@ -879,13 +1077,13 @@ def doctor(vault_str):
         else:
             console.print(f"  [yellow]![/yellow] {name} missing (run [bold]olw init[/bold])")
 
-    # ── Ollama connection ────────────────────────────────────────────────────
-    console.print("\n[bold]Ollama[/bold]")
-    client = OllamaClient(base_url=config.ollama.url, timeout=10)
+    # ── Provider connection ───────────────────────────────────────────────────
+    console.print(f"\n[bold]{prov.name}[/bold]")
+    client = build_client(config)
     try:
         client.require_healthy()
-        console.print(f"  [green]✓[/green] Reachable at {config.ollama.url}")
-    except OllamaError as e:
+        console.print(f"  [green]✓[/green] Reachable at {prov.url}")
+    except LLMError as e:
         console.print(f"  [red]✗[/red] {e}")
         ok = False
 
@@ -900,10 +1098,12 @@ def doctor(vault_str):
         if any(model_name in a for a in available_models):
             console.print(f"  [green]✓[/green] {label}: {model_name}")
         else:
-            console.print(
-                f"  [yellow]![/yellow] {label}: {model_name} not found — "
+            pull_hint = (
                 f"run: [bold]ollama pull {model_name}[/bold]"
+                if prov.name == "ollama"
+                else "check provider model list"
             )
+            console.print(f"  [yellow]![/yellow] {label}: {model_name} not found — {pull_hint}")
             ok = False
 
     # ── Vault stats ───────────────────────────────────────────────────────────
