@@ -35,6 +35,15 @@ class LLMError(Exception):
     """Base error for all LLM client failures (OllamaError inherits from this)."""
 
 
+class LLMBadRequestError(LLMError):
+    """HTTP 400 from the provider — usually bad input (prompt/context too long, etc.).
+
+    Unlike transient connection or rate-limit errors this is per-request and non-retryable
+    at the pipeline level, so compile_concepts catches it per-concept rather than aborting
+    the whole run.
+    """
+
+
 class OpenAICompatClient:
     def __init__(
         self,
@@ -107,6 +116,8 @@ class OpenAICompatClient:
             return LLMError(f"{prefix}Request timed out ({self._timeout}s). {context}")
         if isinstance(exc, httpx.HTTPStatusError):
             code = exc.response.status_code
+            if code == 400:
+                return LLMBadRequestError(f"{prefix}HTTP {code}: {exc.response.text[:200]}")
             if code == 401:
                 return LLMError(f"{prefix}HTTP 401 Unauthorized. Check your API key.")
             if code == 429:
@@ -190,14 +201,35 @@ class OpenAICompatClient:
 
         try:
             resp = self._client.post(self._chat_url(), json=payload)
-            # Auto-downgrade: if provider rejects response_format, retry without it
+            # Each auto-downgrade strips one unsupported field and retries.
+            # Use current_payload so retries chain (each builds on the previous
+            # stripped payload rather than the original).
+            current_payload = payload
+
+            # Auto-downgrade 1: provider rejects response_format → retry without it
             if resp.status_code == 400 and use_json_mode:
                 log.debug(
                     "%s: HTTP 400 with response_format, retrying without json mode",
                     self.provider_name,
                 )
-                payload_no_json = {k: v for k, v in payload.items() if k != "response_format"}
-                resp = self._client.post(self._chat_url(), json=payload_no_json)
+                current_payload = {
+                    k: v for k, v in current_payload.items() if k != "response_format"
+                }
+                resp = self._client.post(self._chat_url(), json=current_payload)
+
+            # Auto-downgrade 2: n_keep > context (LM Studio / llama.cpp) → retry without max_tokens
+            if resp.status_code == 400 and "max_tokens" in current_payload:
+                err_text = resp.text.lower()
+                if "tokens to keep" in err_text or "n_keep" in err_text:
+                    log.debug(
+                        "%s: HTTP 400 n_keep error, retrying without max_tokens",
+                        self.provider_name,
+                    )
+                    current_payload = {
+                        k: v for k, v in current_payload.items() if k != "max_tokens"
+                    }
+                    resp = self._client.post(self._chat_url(), json=current_payload)
+
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             raise self._wrap_error(e) from e
