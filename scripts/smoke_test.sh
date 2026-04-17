@@ -290,8 +290,9 @@ if [[ "$SOURCE_COUNT" -gt 0 ]]; then
     check "source page has concept wikilinks" "grep -q '\[\[' \"$FIRST_SOURCE\""
 
     SRC_YAML_ERR=$(uv run --project "$REPO_DIR" python - "$FIRST_SOURCE" 2>/dev/null <<'PYEOF'
-import sys, frontmatter
+import sys
 try:
+    import frontmatter
     frontmatter.load(sys.argv[1])
 except Exception as e:
     print(f"error: {e}")
@@ -301,8 +302,9 @@ PYEOF
     check "source page YAML is parseable" "test -z \"$SRC_YAML_ERR\""
 
     SRC_ALIAS_ERR=$(uv run --project "$REPO_DIR" python - "$FIRST_SOURCE" 2>/dev/null <<'PYEOF'
-import sys, frontmatter
+import sys
 try:
+    import frontmatter
     m = frontmatter.load(sys.argv[1])
     aliases = m.get('aliases', [])
     assert isinstance(aliases, list), f'aliases not a list: {aliases!r}'
@@ -338,6 +340,33 @@ if [[ "$SOURCE_COUNT" -gt 0 ]]; then
     check "source pages have concept wikilinks" "test '$CONCEPT_LINKS' -ge 1"
 fi
 
+# ── Language detection check ──────────────────────────────────────────────────
+header "Language detection (ingest)"
+
+cat > "$VAULT_DIR/raw/note-francais.md" <<'EOF'
+---
+title: Apprentissage automatique
+---
+
+L'apprentissage automatique est une branche de l'intelligence artificielle.
+Les algorithmes apprennent à partir des données sans être explicitement programmés.
+
+Les principales approches sont l'apprentissage supervisé, non supervisé et par renforcement.
+EOF
+
+$OLW ingest "$VAULT_DIR/raw/note-francais.md" 2>&1
+
+LANG_IN_DB=$(python3 - <<PYEOF
+import sqlite3
+conn = sqlite3.connect("$VAULT_DIR/.olw/state.db")
+row = conn.execute("SELECT language FROM raw_notes WHERE path='raw/note-francais.md'").fetchone()
+print(row[0] if row else "")
+conn.close()
+PYEOF
+)
+check "language column populated after ingest" "test -n \"$LANG_IN_DB\""
+info "Detected language: '$LANG_IN_DB'"
+
 # ── Compile (concept-driven) ──────────────────────────────────────────────────
 header "olw compile (concept-driven)"
 info "Calling $PROVIDER ($HEAVY_MODEL) — may take 2-5 min..."
@@ -357,8 +386,9 @@ if [[ "$DRAFT_COUNT" -gt 0 ]]; then
     check "draft has ## Sources section" "grep -q '^## Sources' \"$FIRST_DRAFT\""
     check "draft has confidence field"   "grep -q 'confidence:' \"$FIRST_DRAFT\""
     DRAFT_YAML_OK=$(uv run --project "$REPO_DIR" python - "$FIRST_DRAFT" 2>/dev/null <<'PYEOF'
-import sys, frontmatter
+import sys
 try:
+    import frontmatter
     frontmatter.load(sys.argv[1])
 except Exception as e:
     print(f"error: {e}")
@@ -367,12 +397,17 @@ PYEOF
 )
     check "draft YAML is parseable" "test -z \"$DRAFT_YAML_OK\""
     DRAFT_TAG_BAD=$(uv run --project "$REPO_DIR" python - "$FIRST_DRAFT" 2>/dev/null <<'PYEOF'
-import sys, re, frontmatter
-m = frontmatter.load(sys.argv[1])
-valid_re = re.compile(r'^[a-z0-9][a-zA-Z0-9_/\-]*$')
-bad = [t for t in m.get('tags', []) if not isinstance(t, str) or ' ' in t or t != t.lower() or not valid_re.match(t)]
-if bad:
-    print(f"Bad tags: {bad}")
+import sys
+try:
+    import re, frontmatter
+    m = frontmatter.load(sys.argv[1])
+    valid_re = re.compile(r'^[a-z0-9][a-zA-Z0-9_/\-]*$')
+    bad = [t for t in m.get('tags', []) if not isinstance(t, str) or ' ' in t or t != t.lower() or not valid_re.match(t)]
+    if bad:
+        print(f"Bad tags: {bad}")
+        sys.exit(1)
+except Exception as e:
+    print(f"error: {e}")
     sys.exit(1)
 PYEOF
 )
