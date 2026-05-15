@@ -638,3 +638,26 @@ def test_doctor_prints_graph_guidance(runner: CliRunner, cfg_dir: Path, tmp_path
     assert "Published-only graph filter" in result.output
     assert "-path:raw" in result.output
     assert "-file:Welcome" in result.output
+
+
+def test_setup_wizard_vllm_saves_api_key(runner: CliRunner, cfg_dir: Path):
+    """Selecting vLLM in the wizard should prompt for an optional API key and persist it."""
+    with patch("obsidian_llm_wiki.openai_compat_client.OpenAICompatClient") as MockClient:
+        instance = MagicMock()
+        instance.healthcheck.return_value = False
+        instance.list_models_detailed.return_value = []
+        MockClient.return_value = instance
+
+        result = runner.invoke(
+            cli,
+            ["setup"],
+            # provider=vllm, URL default, api_key, fast model, heavy model, no vault, citations off
+            input="vllm\n\nmy-enterprise-key\nllama3\nllama3\n\nn\n",
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    cfg = load_global_config()
+    assert cfg is not None
+    assert cfg.provider_name == "vllm"
+    assert cfg.api_key == "my-enterprise-key"
