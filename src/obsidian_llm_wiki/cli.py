@@ -673,17 +673,17 @@ def setup(non_interactive: bool, reset: bool, provider_preset: str | None):
             )
             sys.exit(1)
 
-        # ── Step 3 — API key (cloud + custom providers) ───────────────────────
+        # ── Step 3 — API key (all non-Ollama providers; optional for local) ─────
         import os
 
-        needs_key_prompt = chosen_prov.requires_auth or chosen_name == "custom"
+        needs_key_prompt = chosen_name != "ollama"
         api_key: str | None = None
         if needs_key_prompt:
             console.print()
             console.print("  [bold]Step 3[/bold]  API key")
             if chosen_prov.env_var:
                 env_hint = f"  [dim](or set {chosen_prov.env_var} env var)[/dim]"
-            elif chosen_name == "custom":
+            elif not chosen_prov.requires_auth:
                 env_hint = "  [dim](optional — press Enter to skip)[/dim]"
             else:
                 env_hint = ""
