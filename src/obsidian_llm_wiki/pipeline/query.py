@@ -23,6 +23,7 @@ import frontmatter
 
 from ..config import Config
 from ..indexer import append_log, generate_index
+from ..markdown_math import sanitize_obsidian_math
 from ..models import PageSelection, QueryAnswer, WikiArticleRecord
 from ..protocols import LLMClientProtocol
 from ..state import (
@@ -204,7 +205,7 @@ def _strip_unknown_wikilinks(content: str, known_titles: list[str]) -> str:
 def _sanitize_query_answer(answer: str, source_pages: list[str], known_titles: list[str]) -> str:
     """Strip invented wikilinks from query answers before returning or saving."""
     allowed_titles = [*known_titles, *source_pages]
-    return _strip_unknown_wikilinks(answer, allowed_titles)
+    return _strip_unknown_wikilinks(sanitize_obsidian_math(answer), allowed_titles)
 
 
 def _body_hash(body: str) -> str:

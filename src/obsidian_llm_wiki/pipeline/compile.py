@@ -27,6 +27,7 @@ from pathlib import Path
 import frontmatter as fm_lib
 
 from ..config import Config
+from ..markdown_math import sanitize_obsidian_math
 from ..models import ArticlePlan, CompilePlan, SingleArticle, WikiArticleRecord
 from ..openai_compat_client import LLMBadRequestError, LLMTruncatedError
 from ..protocols import LLMClientProtocol
@@ -611,6 +612,7 @@ def _write_draft(
 
     # Inject wikilinks for known article titles mentioned in body
     body = _repair_literal_newlines(content_result.content)
+    body = sanitize_obsidian_math(body)
     body = _repair_malformed_embeds(body)
     body = _repair_bare_bracket_links(body)
     body = ensure_wikilinks(body, existing_titles or [])
