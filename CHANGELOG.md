@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Notice
+
+obsidian-llm-wiki is entering maintenance mode. Bug fixes will continue to be
+released here. New features and capabilities are being built in
+[Synto](https://github.com/kytmanov/synto), the successor project. See the
+README for migration details.
+
 ## [0.8.5] - 2026-05-16
 
 ### Fixed
