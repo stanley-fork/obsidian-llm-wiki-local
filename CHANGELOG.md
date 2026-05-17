@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Notice
+
+obsidian-llm-wiki is entering maintenance mode. Bug fixes will continue to be
+released here. New features and capabilities are being built in
+[Synto](https://github.com/kytmanov/synto), the successor project. See the
+README for migration details.
+
+## [0.8.5] - 2026-05-16
+
+### Fixed
+
+- **Malformed LaTeX in LLM output** — `\[ ... \]` display-math delimiters and
+  bare LaTeX lines (e.g. `\frac{a}{b}`) are now automatically converted to
+  Obsidian-compatible `$$ ... $$` notation in both the compile and query
+  pipelines. Existing code blocks and math regions are protected from
+  rewriting. Closes [#67](https://github.com/kytmanov/obsidian-llm-wiki-local/issues/67).
+
+## [0.8.4] - 2026-05-16
+
+### Fixed
+
+- **API key prompt for local providers in setup wizard** — vLLM, LM Studio,
+  and other non-Ollama local providers can be deployed with key verification
+  in enterprise environments. The setup wizard now shows the optional API key
+  prompt for all non-Ollama providers, not only cloud or custom ones. Closes
+  [#64](https://github.com/kytmanov/obsidian-llm-wiki-local/issues/64).
+
 ## [0.8.3] - 2026-05-08
 
 ### Fixed

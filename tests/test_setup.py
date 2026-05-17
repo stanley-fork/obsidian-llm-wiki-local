@@ -368,6 +368,9 @@ def test_setup_wizard_summary_mentions_support_and_no_telemetry(runner: CliRunne
     assert "Feedback:" in result.output
     assert "olw support" in result.output
     assert "olw does not collect telemetry" in result.output
+    assert "bug reports" in result.output
+    assert "migration guidance" in result.output
+    assert "project links" in result.output
 
 
 def test_setup_wizard_model_number_selection(runner: CliRunner, cfg_dir: Path):

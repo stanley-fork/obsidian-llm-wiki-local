@@ -20,6 +20,17 @@ Drop a markdown file into a folder. The pipeline reads it, extracts concepts, an
 
 ---
 
+> [!NOTE]
+> **obsidian-llm-wiki is now in maintenance mode.**
+>
+> Bug fixes will continue. New features are being developed in [**Synto**](https://github.com/kytmanov/synto) — the successor with a broader scope than the Obsidian LLM wiki pattern.
+>
+> Migration is handled by Synto's migration command: point it at your existing vault and it converts the project to Synto's format. Your notes and wiki content remain the source of truth. If you're happy with what this tool does today, it keeps working; when you're ready for more, Synto provides the upgrade path.
+>
+> **→ [Check out Synto](https://github.com/kytmanov/synto)**
+
+---
+
 ## The idea (Karpathy's LLM Wiki)
 
 This project is a practical implementation of the pattern described by Andrej Karpathy in [**"The LLM Wiki"**](https://karpathy.ai/llmwiki) — a vision for a personal knowledge base where:

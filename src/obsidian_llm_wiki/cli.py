@@ -33,7 +33,7 @@ err_console = Console(stderr=True, style="bold red")
 
 PROJECT_REPO_URL = "https://github.com/kytmanov/obsidian-llm-wiki-local"
 PROJECT_ISSUES_URL = f"{PROJECT_REPO_URL}/issues"
-PROJECT_DISCUSSIONS_URL = f"{PROJECT_REPO_URL}/discussions"
+SYNTO_URL = "https://github.com/kytmanov/synto"
 
 _EXPERIMENTAL_CITATIONS_COPY = (
     "Inline source citations link generated claims back to source pages. "
@@ -256,7 +256,7 @@ def cli():
     """obsidian-llm-wiki (olw) — 100% local Obsidian → wiki pipeline.
 
     Run `olw setup` for interactive configuration.
-    Run `olw support` for bug reports, suggestions, and feedback links.
+    Run `olw support` for bug reports, migration guidance, and project links.
     """
     import logging
 
@@ -878,8 +878,8 @@ def setup(non_interactive: bool, reset: bool, provider_preset: str | None):
             "  Feedback:",
             "    [bold]olw support[/bold]",
             (
-                "    [dim]olw does not collect telemetry - bug reports, suggestions, and "
-                "experience notes are the main way this project improves.[/dim]"
+                "    [dim]olw does not collect telemetry. Run olw support for bug reports, "
+                "migration guidance, and project links.[/dim]"
             ),
         ]
         console.print()
@@ -1471,15 +1471,17 @@ def clean(vault_str, yes):
 
 @cli.command()
 def support():
-    """Show bug-report, suggestion, and feedback links."""
+    """Show bug-report, migration, and project links."""
 
     console.print("[bold]olw support[/bold]\n")
     console.print("olw does not collect telemetry.")
-    console.print("If something was confusing, useful, annoying, or missing, please tell us.\n")
+    console.print("obsidian-llm-wiki is in maintenance mode. Bug fixes continue here.")
+    console.print("New features and non-bug support have moved to Synto.\n")
     console.print("Bug reports:")
     console.print(f"  {PROJECT_ISSUES_URL}\n")
-    console.print("Suggestions and experience reports:")
-    console.print(f"  {PROJECT_DISCUSSIONS_URL}\n")
+    console.print("Migration, feature requests, questions, and general feedback:")
+    console.print(f"  {SYNTO_URL}")
+    console.print("  synto migrate-olw --vault <path>\n")
     console.print("Source code:")
     console.print(f"  {PROJECT_REPO_URL}\n")
     console.print("When reporting a bug, include:")

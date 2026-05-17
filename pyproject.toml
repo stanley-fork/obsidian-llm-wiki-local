@@ -1,6 +1,6 @@
 [project]
 name = "obsidian-llm-wiki"
-version = "0.8.4"
+version = "0.8.5"
 description = "Convert Obsidian notes into an AI-maintained wiki using local or cloud LLMs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,8 @@ dependencies = [
 Homepage = "https://github.com/kytmanov/obsidian-llm-wiki-local"
 Repository = "https://github.com/kytmanov/obsidian-llm-wiki-local"
 Issues = "https://github.com/kytmanov/obsidian-llm-wiki-local/issues"
+Changelog = "https://github.com/kytmanov/obsidian-llm-wiki-local/blob/master/CHANGELOG.md"
+Successor = "https://github.com/kytmanov/synto"
 
 
 [project.scripts]
